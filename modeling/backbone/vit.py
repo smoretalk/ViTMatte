@@ -249,16 +249,54 @@ class Block(nn.Module):
     def forward(self, x):
         shortcut = x
         x = self.norm1(x)
-        # Window partition
-        if self.window_size > 0:
-            H, W = x.shape[1], x.shape[2]
-            x, pad_hw = window_partition(x, self.window_size)
 
-        x = self.attn(x)
+        if self.training==False:
+            if self.window_size > 0:
+                # Window partition
+                if self.window_size > 0:
+                    H, W = x.shape[1], x.shape[2]
+                    x, pad_hw = window_partition(x, self.window_size)
+                
+                x = self.attn(x)
+                # Reverse window partition
+                if self.window_size > 0:
+                    x = window_unpartition(x, self.window_size, pad_hw, (H, W))
+            
+            else:
+                x_ori = x
+                B, H, W, C = x.shape
+                fea = torch.zeros_like(x)
+                xs = []
+                stride_h, stride_w = 2, 2
+                for sh in range(stride_h):
+                    for sw in range(stride_w):
+                        xs.append(x[:, sh::stride_h, sw::stride_w])
+                x = torch.cat(xs, dim=0)
 
-        # Reverse window partition
-        if self.window_size > 0:
-            x = window_unpartition(x, self.window_size, pad_hw, (H, W))
+                fea_list = []
+                torch.cuda.empty_cache()
+                for i in range(x.shape[0]):
+                    fea_list.append(self.attn(x[i:i+1]))
+                    torch.cuda.empty_cache()
+                x = torch.cat(fea_list, dim=0)
+
+                i = 0
+                for sh in range(stride_h):
+                    for sw in range(stride_w):
+                        fea[:, sh::stride_h, sw::stride_w] = x[i:i+1]
+                        i = i+1
+                x = fea
+        else:
+            # Window partition
+            if self.window_size > 0:
+                H, W = x.shape[1], x.shape[2]
+                x, pad_hw = window_partition(x, self.window_size)
+
+            x = self.attn(x)
+
+            # Reverse window partition
+            if self.window_size > 0:
+                x = window_unpartition(x, self.window_size, pad_hw, (H, W))
 
         x = shortcut + self.drop_path(x)
         x = x + self.drop_path(self.mlp(self.norm2(x)))
